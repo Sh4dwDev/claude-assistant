@@ -37,6 +37,20 @@ CREATE INDEX IF NOT EXISTS idx_usage_month ON usage_log(month, service);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id INTEGER PRIMARY KEY, endpoint TEXT UNIQUE, data TEXT, created REAL
 );
+CREATE TABLE IF NOT EXISTS agents (
+  id INTEGER PRIMARY KEY, name TEXT, os TEXT, role TEXT DEFAULT 'pc', mac TEXT, broadcast TEXT,
+  token_hash TEXT UNIQUE, created REAL, last_seen REAL
+);
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY, agent_id INTEGER, title TEXT, project TEXT, prompt TEXT,
+  status TEXT,            -- queued | waking | running | done | failed | cancelled
+  session_id TEXT, summary TEXT, last_log TEXT, cost_usd REAL DEFAULT 0,
+  created REAL, updated REAL
+);
+CREATE TABLE IF NOT EXISTS job_logs (
+  id INTEGER PRIMARY KEY, job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE, ts REAL, text TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_logs ON job_logs(job_id, id);
 """
 
 
@@ -86,6 +100,7 @@ DEFAULTS: dict[str, Any] = {
     "cap_phone_usd": 5.0,
     "cap_tts_usd": 5.0,
     "speak_replies": False,
+    "pc_idle_sleep_min": 0,  # 0 = never put the PC to sleep automatically
 }
 
 

@@ -56,6 +56,7 @@ async function* sse(path, body) {
 const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 function inline(s) {
   return s
+    .replace(/!\[([^\]]*)\]\((\/api\/screens\/[\w.-]+\.jpg)\)/g, '<a href="$2" target="_blank" rel="noopener"><img src="$2" alt="$1" loading="lazy"></a>')
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>")
@@ -289,7 +290,7 @@ async function send(text) {
       else if (event === "error") { col.parentElement.classList.add("error"); reply += (reply ? "\n\n" : "") + data.message; paint(); }
       else if (event === "done") {
         status.remove();
-        const meta = h("div", { class: "meta" }, data.instant ? "instant" : data.cost_usd ? `$${data.cost_usd.toFixed(4)}` : "");
+        const meta = h("div", { class: "meta" }, data.instant ? `instant · ${data.ms ?? 0} ms` : data.cost_usd ? `$${data.cost_usd.toFixed(4)}` : "");
         col.append(meta);
       }
     }
@@ -395,8 +396,15 @@ function connectEvents() {
   es.addEventListener("notification", (e) => { const n = JSON.parse(e.data); toast(n.title, n.body); refreshNotifications(); });
   es.addEventListener("costs", () => refreshCosts());
   es.addEventListener("memory", () => { if (!$("#settings").hidden) renderMemories(); });
+  es.addEventListener("pc", () => { refreshStatus(); pairWatch?.(); });
+  es.addEventListener("pc_status", (e) => updatePcStatus(JSON.parse(e.data)));
+  es.addEventListener("job", () => { clearTimeout(jobsTimer); jobsTimer = setTimeout(refreshJobs, 150); });
+  es.addEventListener("job_log", (e) => appendJobLog(JSON.parse(e.data)));
+  es.addEventListener("confirm", (e) => addConfirm(JSON.parse(e.data)));
+  es.addEventListener("confirm_done", (e) => $(`#confirm-${JSON.parse(e.data).id}`)?.remove());
   es.onerror = () => $("#conn").classList.remove("on");
 }
+let jobsTimer = 0;
 
 function toast(title, body) {
   const t = h("div", { class: "toast" }, h("b", {}, title), body ? h("span", {}, body) : null);
@@ -432,13 +440,164 @@ async function refreshCosts() {
   $("#costs").replaceChildren(...rows);
 }
 
+// ---------------------------------------------------------------- PC panel
 async function refreshStatus() {
   try {
     const s = await api("/api/status");
-    $("#pc-dot").className = `dot ${s.pc.connected ? "on" : "off"}`;
-    $("#pc-state").textContent = s.pc.connected ? "Online" : "Not connected";
-    $("#pc-note").textContent = s.pc.note || "";
+    renderPcs(s.agents);
+    renderJobs(s.jobs);
+    $("#confirms").replaceChildren();
+    s.confirmations.forEach(addConfirm);
   } catch {}
+}
+
+function meterRow(label, v) {
+  return [h("span", {}, label), h("div", { class: `bar ${v >= 85 ? "warn" : ""}` }, h("i", { style: `width:${v || 0}%` }))];
+}
+
+function renderPcs(list) {
+  const box = $("#pc");
+  if (!list.length) {
+    box.replaceChildren(h("p", { class: "note" }, "No PC paired yet. Pair one to control it and run coding jobs."),
+      h("div", { class: "chips" }, h("button", { class: "chip", onclick: openPairing }, "Pair a PC")));
+    return;
+  }
+  box.replaceChildren(...list.map((a) => {
+    const st = a.status || {};
+    return h("div", { class: "pc", id: `pc-${a.id}` },
+      h("div", { class: "row" }, h("span", { class: `dot ${a.online ? "on" : ""}` }), h("b", {}, a.name),
+        h("span", { class: "muted mono", style: "font-size:11px" }, a.role === "relay" ? "relay" : a.os)),
+      a.online && a.role !== "relay" ? h("div", { class: "meters", "data-meters": "" }, ...meterRow("CPU", st.cpu), ...meterRow("RAM", st.ram)) : null,
+      a.online && st.active ? h("div", { class: "sub", "data-active": "" }, st.active) : null,
+      !a.online ? h("div", { class: "sub" }, a.last_seen ? `Offline · last seen ${ago(a.last_seen)} ago` : "Offline") : null,
+      a.role === "pc" ? h("div", { class: "chips" },
+        a.online
+          ? [h("button", { class: "chip", onclick: () => send("screenshot") }, "Screenshot"),
+             h("button", { class: "chip", onclick: () => send("lock") }, "Lock"),
+             h("button", { class: "chip", onclick: () => send("sleep") }, "Sleep")]
+          : h("button", { class: "chip", onclick: async (e) => {
+              e.target.disabled = true;
+              try { const r = await api("/api/pc/wake", { method: "POST" }); toast("Wake", r.message); } finally { e.target.disabled = false; }
+            } }, "Wake")) : null);
+  }));
+}
+
+function updatePcStatus(s) {
+  const el = $(`#pc-${s.agent_id}`);
+  if (!el) return refreshStatus();
+  const m = $("[data-meters]", el);
+  if (m) m.replaceChildren(...meterRow("CPU", s.cpu), ...meterRow("RAM", s.ram));
+  const act = $("[data-active]", el);
+  if (act) act.textContent = s.active || "";
+}
+
+let pairWatch = null;
+async function openPairing() {
+  const { code, expires_in } = await api("/api/agent/pair-code", { method: "POST" });
+  const hub = location.origin;
+  const raw = "https://raw.githubusercontent.com/Sh4dwDev/claude-assistant/main/agent";
+  const win = `$env:HUB='${hub}'; $env:PAIR='${code}'; irm ${raw}/install-windows.ps1 | iex`;
+  const lin = `curl -fsSL ${raw}/install-linux.sh | HUB=${hub} PAIR=${code} bash`;
+  const relay = `curl -fsSL ${raw}/install-linux.sh | HUB=${hub} PAIR=${code} ROLE=relay bash`;
+  const copyRow = (cmd) => h("div", { class: "cmd" }, h("code", {}, cmd),
+    h("button", { class: "btn", onclick: async (e) => { await navigator.clipboard.writeText(cmd); e.target.textContent = "Copied"; } }, "Copy"));
+  const left = h("span", { class: "mono muted" });
+  const until = Date.now() + expires_in * 1000;
+  const tick = setInterval(() => {
+    const s = Math.max(0, Math.round((until - Date.now()) / 1000));
+    left.textContent = s ? `valid for ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "expired, close and try again";
+    if (!s || $("#modal").hidden) clearInterval(tick);
+  }, 1000);
+  const before = (await api("/api/status")).agents.length;
+  pairWatch = async () => {
+    const now = (await api("/api/status")).agents;
+    if (now.length > before && !$("#modal").hidden) { closeModal(); toast("Paired", `${now[now.length - 1].name} is connected.`); pairWatch = null; }
+  };
+  openModal("Pair a PC",
+    h("p", { class: "muted" }, "On the PC, make sure Tailscale is on. Then paste one command. It installs the agent, pairs it with this code and starts it at every login."),
+    h("div", { class: "pair-code" }, code), left,
+    h("h2", { class: "group-title" }, "Windows: paste into PowerShell"), copyRow(win),
+    h("h2", { class: "group-title" }, "CachyOS / Hyprland: paste into a terminal"), copyRow(lin),
+    h("h2", { class: "group-title" }, "Optional: a Raspberry Pi or other always-on device at home"),
+    h("p", { class: "note" }, "This makes “wake my PC” work while you're away. The hub is on a server outside your home, so it can't wake the PC on its own."),
+    copyRow(relay));
+}
+
+function openModal(title, ...body) {
+  $("#modal-title").textContent = title;
+  $("#modal-body").replaceChildren(...body);
+  $("#modal").hidden = false;
+}
+function closeModal() { $("#modal").hidden = true; openJob = null; }
+$("#btn-close-modal").addEventListener("click", closeModal);
+$("#modal").addEventListener("click", (e) => { if (e.target.id === "modal") closeModal(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
+$("#btn-pair").addEventListener("click", openPairing);
+
+// ---------------------------------------------------------------- jobs
+async function refreshJobs() { try { renderJobs(await api("/api/jobs")); if (openJob) showJob(openJob, true); } catch {} }
+
+function renderJobs(list) {
+  const box = $("#jobs");
+  if (!list.length) { box.replaceChildren(h("p", { class: "note" }, "No jobs yet. Ask for something to be built, e.g. “make me a Godot prototype of a space miner”.")); return; }
+  box.replaceChildren(...list.slice(0, 6).map((j) => h("div", { class: "job", onclick: () => showJob(j.id) },
+    h("span", { class: `dot ${j.status === "running" || j.status === "waking" ? "running" : j.status === "done" ? "on" : ""}` }),
+    h("b", {}, j.title), h("span", { class: `st ${j.status}` }, j.status),
+    j.last_log ? h("span", { class: "sub" }, j.last_log) : null)));
+}
+
+let openJob = null;
+async function showJob(id, refreshOnly = false) {
+  const j = await api(`/api/jobs/${id}`);
+  openJob = id;
+  const logbox = h("div", { class: "logbox", id: "job-log" },
+    ...(j.logs.length ? j.logs.map((l) => h("div", {}, h("span", { class: "t" }, new Date(l.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })), l.text))
+      : [h("div", { class: "t" }, "Waiting for the first output...")]));
+  const active = ["queued", "waking", "running"].includes(j.status);
+  const follow = h("input", { class: "input", placeholder: active ? "Wait for it to finish to add instructions" : "Follow-up instructions, e.g. add a score counter" , disabled: active || j.status === "cancelled" ? true : false });
+  const cancelBtn = h("button", { class: "btn", onclick: async (e) => {
+    if (e.target.dataset.sure) { await api(`/api/jobs/${id}/cancel`, { method: "POST" }); return; }
+    e.target.dataset.sure = "1"; e.target.textContent = "Tap again to cancel";
+  } }, "Cancel job");
+  const body = [
+    h("div", { class: "row" }, h("span", { class: `st mono muted` }, `${j.status} · Projects/${j.project}`)),
+    j.summary ? h("div", { class: "summary bubble" }) : null,
+    logbox,
+    h("div", { class: "actions" },
+      active ? cancelBtn : null,
+      !active && j.status !== "cancelled" ? h("form", { style: "display:flex;gap:8px;flex:1", onsubmit: async (e) => {
+        e.preventDefault(); if (!follow.value.trim()) return;
+        try { await api(`/api/jobs/${id}/followup`, { body: { text: follow.value } }); follow.value = ""; } catch (x) { toast("Follow-up", x.message); }
+      } }, follow, h("button", { class: "btn primary" }, "Send")) : null),
+  ];
+  if (refreshOnly && !$("#modal").hidden && $("#modal-title").textContent === j.title) {
+    $("#modal-body").replaceChildren(...body.filter(Boolean));
+  } else if (!refreshOnly) openModal(j.title, ...body.filter(Boolean));
+  if (j.summary) $(".summary", $("#modal-body")).innerHTML = markdown(j.summary);
+  logbox.scrollTop = 1e9;
+}
+
+function appendJobLog({ id, text }) {
+  if (openJob !== id) return;
+  const box = $("#job-log");
+  if (!box) return;
+  box.append(h("div", {}, h("span", { class: "t" }, new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })), text));
+  box.scrollTop = 1e9;
+}
+
+// ---------------------------------------------------------------- confirmations (ask-first actions)
+function addConfirm(c) {
+  if ($(`#confirm-${c.id}`)) return;
+  const el = h("div", { class: "confirm", id: `confirm-${c.id}` }, h("span", {}, c.question),
+    h("button", { class: "btn primary", onclick: () => answer(true) }, "Yes"),
+    h("button", { class: "btn", onclick: () => answer(false) }, "No"));
+  async function answer(approve) {
+    el.remove();
+    const r = await api(`/api/confirm/${c.id}`, { body: { approve, conversation_id: state.conv } });
+    addMessage("assistant", r.message);
+  }
+  $("#confirms").append(el);
+  setTimeout(() => el.remove(), (c.expires_in || 120) * 1000);
 }
 
 // ---------------------------------------------------------------- clock + tabs
@@ -485,7 +644,8 @@ async function openSettings() {
       field("Server (EUR per month)", inp("server_cost_eur", "number", { step: "0.01" })),
       field("Claude API cap (USD)", inp("cap_claude_api_usd", "number", { step: "1" })),
       field("Calls and SMS cap (USD)", inp("cap_phone_usd", "number", { step: "1" })),
-      field("Voice TTS cap (USD)", inp("cap_tts_usd", "number", { step: "1" }))),
+      field("Voice TTS cap (USD)", inp("cap_tts_usd", "number", { step: "1" })),
+      field("PC auto-sleep after idle (min, 0 = off)", inp("pc_idle_sleep_min", "number", { step: "5", min: "0" }))),
     h("div", { class: "actions" }, saveBtn, msg));
 
   saveBtn.addEventListener("click", async () => {
@@ -522,7 +682,17 @@ async function openSettings() {
       h("button", { class: "btn", onclick: () => document.documentElement.requestFullscreen?.() }, "Full screen"),
       h("button", { class: "btn", onclick: async () => { await api("/api/logout", { method: "POST" }); location.reload(); } }, "Log out")));
 
-  $("#settings-body").replaceChildren(general, caps, mem, notif, keys, screen);
+  const { agents: pcs } = await api("/api/status");
+  const devices = h("div", { class: "group" }, h("h2", {}, "Paired devices"),
+    ...(pcs.length ? pcs.map((a) => h("div", { class: "secret-row" }, h("span", { class: `dot ${a.online ? "on" : ""}` }),
+      `${a.name} (${a.role === "relay" ? "wake relay" : a.os})`,
+      h("button", { class: "chip", onclick: async (e) => {
+        if (!e.target.dataset.sure) { e.target.dataset.sure = 1; e.target.textContent = "Tap again to remove"; return; }
+        await api(`/api/pc/${a.id}/forget`, { method: "POST" }); openSettings();
+      } }, "Remove"))) : [h("p", { class: "note" }, "None yet.")]),
+    h("div", { class: "actions" }, h("button", { class: "btn", onclick: () => { $("#settings").hidden = true; openPairing(); } }, "Pair a device")));
+
+  $("#settings-body").replaceChildren(general, caps, devices, mem, notif, keys, screen);
   renderMemories();
 }
 

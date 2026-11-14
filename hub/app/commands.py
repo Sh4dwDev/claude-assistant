@@ -14,6 +14,10 @@ from typing import Awaitable, Callable
 Handler = Callable[[re.Match], Awaitable[str]]
 
 
+class Unclear(Exception):
+    """Raised by a handler that can't act confidently: the message goes to Claude instead."""
+
+
 @dataclass
 class Rule:
     pattern: re.Pattern
@@ -34,7 +38,8 @@ def rule(regex: str, description: str):
 def _normalise(text: str) -> str:
     t = text.strip().rstrip(".!?").strip()
     t = re.sub(r"^(hey |ok |okay )?(claude|jarvis)[, ]+", "", t, flags=re.IGNORECASE)
-    t = re.sub(r"^(please |can you |could you )", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"^(please |can you |could you |would you |kan du |vær så snill og )", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"[, ]+(please|thanks|thank you|for me|now|takk|er du snill)$", "", t, flags=re.IGNORECASE)
     return t.strip()
 
 

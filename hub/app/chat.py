@@ -31,13 +31,19 @@ How to talk: be direct and warm, like a capable friend. Lead with the answer. Ke
 {user} asks for depth: a couple of sentences is usually right, because replies may be read aloud. Use \
 markdown only when it helps (code, lists, tables). Answer in the language {user} writes in.
 
-What you can do right now: answer questions, search the web and read pages (cite where facts came from), \
-remember lasting facts about {user} with the memory tools, and send push notifications. Coding jobs on the PC, \
-PC control, email, phone calls and spending reports are being added in later milestones; if asked for one, \
-say it isn't connected yet instead of pretending.
+What you can do: answer questions, search the web and read pages (cite where facts came from), remember \
+lasting facts about {user} with the memory tools, send push notifications, control {user}'s PC (open programs \
+and sites, search in the browser, media, volume, lock, sleep, screenshots, wake it when it's off), and run \
+coding jobs: Claude Code works on the PC in its own project folder. For anything that means building or \
+changing software, start a coding job with a complete brief instead of writing the code in chat. Simple PC \
+commands usually run before they reach you; you see the ones that were unclear, so resolve them (for example \
+look up the installed apps) and act. Email, phone calls and spending reports come in later milestones; if \
+asked, say they aren't connected yet.
 
-Safety: never claim to have done something you did not do. Before anything that sends messages to other \
-people, spends money, deletes files or publishes anything, ask {user} first.
+Safety: never claim to have done something you did not do. Closing programs, shutting down, restarting and \
+cancelling jobs always go through a Yes/No confirmation; the tools handle that, so don't ask twice in text. \
+Before anything that sends messages to other people, spends money, deletes files or publishes anything, ask \
+{user} first.
 
 Each user message starts with the local date and time in brackets; use it for anything time-related.
 
@@ -91,6 +97,12 @@ def _save(conv_id: int, role: str, content: list, display: str | None) -> None:
     db.run("UPDATE conversations SET updated=? WHERE id=?", (time.time(), conv_id))
 
 
+def save_note(conv_id: int, text: str) -> None:
+    """An assistant line produced outside the API (e.g. the result of a confirmed action)."""
+    if db.q1("SELECT id FROM conversations WHERE id=?", (conv_id,)):
+        _save(conv_id, "assistant", [{"type": "text", "text": text}], text)
+
+
 def save_exchange(conv_id: int, user_text: str, reply: str) -> None:
     """For replies produced without the API (instant commands): keep them in the chat history."""
     _save(conv_id, "user", [{"type": "text", "text": f"[{_stamp()}] {user_text}"}], user_text)
@@ -101,7 +113,11 @@ def save_exchange(conv_id: int, user_text: str, reply: str) -> None:
 def _tool_label(name: str, inp: dict | None = None) -> str:
     return {"web_search": "Searching the web", "web_fetch": "Reading a page",
             "remember": "Saving to memory", "update_memory": "Updating memory",
-            "forget": "Forgetting", "send_notification": "Sending a notification"}.get(name, f"Using {name}")
+            "forget": "Forgetting", "send_notification": "Sending a notification",
+            "pc_screenshot": "Looking at the screen", "pc_list_apps": "Checking installed apps",
+            "pc_open_app": "Opening on the PC", "pc_open_url": "Opening in the browser", "pc_search": "Searching on the PC",
+            "pc_wake": "Waking the PC", "start_coding_job": "Starting a coding job",
+            "job_status": "Checking the job"}.get(name, f"Using {name.replace('_', ' ')}")
 
 
 async def _stream_once(client, kwargs) -> AsyncIterator[tuple[str, object]]:

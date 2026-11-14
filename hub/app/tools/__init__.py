@@ -3,7 +3,7 @@ To add a tool (Discord, PC control, email...), drop a module here and list it in
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-Handler = Callable[[dict], Awaitable[str]]
+Handler = Callable[[dict], Awaitable[str | list]]  # a string, or content blocks (text + image)
 
 
 @dataclass
@@ -23,8 +23,8 @@ class Tool:
 
 
 def _modules():
-    from . import memory, notify_tool
-    return [memory, notify_tool]
+    from . import memory, notify_tool, pc_tools
+    return [memory, notify_tool, pc_tools]
 
 
 def registry() -> dict[str, Tool]:

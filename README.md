@@ -3,17 +3,20 @@
 A private assistant that runs on your own small server. You reach it from your PC and your
 phone, by text or voice. It's on 24/7, even when your PC is off.
 
-**Status: milestone 1 of 5.** What works today:
+**Status: milestone 2 of 5.** What works today:
 
 - Chat in a clean dashboard on the PC, and as an app on your phone (no app store needed)
 - Answers questions, searches the web and reads pages
 - Remembers your projects and preferences; you can view and edit everything it remembers
+- **Controls your PC** from the PC or your phone: open programs and sites, search, media, volume,
+  lock, sleep, shut down, screenshots. Simple commands run instantly without the AI; risky ones ask first
+- **Coding jobs:** "make me a Godot prototype of X" runs Claude Code on your PC and reports progress
+- **Wakes your PC** when it's off (with a small helper device at home)
 - Free push notifications to your phone, plus Discord if you want
 - Cost panel with monthly spending caps that the hub enforces
 
-Coming next: the PC agent with PC control and coding jobs (milestone 2), calls and texts (3),
-Gmail (4), and offline mode plus the "Hey Claude" wake word (5). Details for milestone 2 are in
-[docs/milestone-2-plan.md](docs/milestone-2-plan.md).
+Coming next: calls and texts (milestone 3), Gmail (4), and offline mode plus the "Hey Claude"
+wake word (5).
 
 ---
 
@@ -71,6 +74,12 @@ Open the address on your PC. A short setup asks for:
 3. **Add to Home Screen** (Android: menu > Install app. iPhone: Share > Add to Home Screen).
 4. Open it from the home screen, then Settings > Notifications > Enable.
 
+### On your PC
+
+Click **Pair a PC** in the dashboard and paste the one command it shows (PowerShell on Windows,
+a terminal on CachyOS). Everything about PC control, coding jobs and waking the PC is in
+[docs/pc.md](docs/pc.md).
+
 ---
 
 ## Everyday use
@@ -78,6 +87,9 @@ Open the address on your PC. A short setup asks for:
 - **Talk:** tap the microphone (or press Ctrl+Space on the PC). Speech recognition works in
   Chrome and Edge; full natural voice arrives in milestone 3.
 - **Memory:** say "remember that...", or edit memories directly in Settings > Memory.
+- **PC:** "open Godot", "search YouTube for lo-fi", "volume 30", "lock my PC", "screenshot".
+  Shutting down or closing programs shows a Yes/No bar first. Full list in [docs/pc.md](docs/pc.md).
+- **Coding:** "make me a Godot prototype of a space miner". Watch it in the Jobs panel.
 - **New chat:** top right. Older chats are kept on the server.
 - **Read replies aloud:** Settings > General.
 
@@ -122,11 +134,18 @@ install-hub.sh        one-command server install
 docker-compose.yml    the hub container (listens only on 127.0.0.1; Tailscale serves it)
 hub/app/              Python (FastAPI) backend
   chat.py             Claude API: streaming, web search, tool loop, cost tracking
-  commands.py         instant commands that skip the AI (PC control plugs in here)
+  commands.py         instant-command engine (patterns that skip the AI)
+  pc_commands.py      the instant PC commands
+  pc.py, confirm.py   PC actions and the ask-first confirmations
+  agents.py, jobs.py  PC connections, pairing, Wake-on-LAN, coding jobs
   tools/              tools Claude can use; add a module to add a tool
   notify.py           notification channels (push, Discord; SMS in milestone 3)
   costs.py            prices, monthly totals, enforced caps
 hub/static/           dashboard and phone app (plain HTML/CSS/JS, no build step)
 hub/tests/            offline tests: python -m tests.test_chat_loop (from hub/)
+agent/                the PC agent (agent.py, platform_win.py, platform_linux.py, jobs.py)
+  install-*.{ps1,sh}  one-command installers the dashboard hands out
+  tests/              offline test: python tests/test_jobs.py (from agent/)
+                      try the agent safely with:  python agent.py run --dry-run
 tools/make_icons.py   regenerates the app icons
 ```

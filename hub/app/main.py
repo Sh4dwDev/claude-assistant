@@ -5,13 +5,14 @@ import time
 from pathlib import Path
 
 import anthropic
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import auth, chat, commands, config, costs, db, events
+from . import agents, auth, chat, commands, config, confirm, costs, db, events, jobs, pc
+from . import pc_commands  # noqa: F401  (registers the instant PC commands)
 from .notify import notify, vapid_keys
 from .setup_steps import SECRET_KEYS, STEPS
 from .tools import memory
@@ -158,7 +159,7 @@ def setup_done():
 # --- settings -------------------------------------------------------------------
 EDITABLE = {"assistant_name": str, "user_name": str, "home": str, "timezone": str, "chat_model": str, "chat_effort": str,
             "server_cost_eur": float, "eur_usd": float, "cap_claude_api_usd": float, "cap_phone_usd": float,
-            "cap_tts_usd": float, "speak_replies": bool}
+            "cap_tts_usd": float, "speak_replies": bool, "pc_idle_sleep_min": int}
 
 
 @app.get("/api/settings", dependencies=authed)
@@ -170,7 +171,7 @@ def get_settings():
 
 
 @app.post("/api/settings", dependencies=authed)
-def save_settings(body: dict):
+async def save_settings(body: dict):
     for k, v in body.items():
         if k not in EDITABLE:
             raise HTTPException(400, f"Unknown setting {k}")
@@ -179,6 +180,8 @@ def save_settings(body: dict):
         except (TypeError, ValueError):
             raise HTTPException(400, f"Bad value for {k}")
     events.publish("costs", {})
+    if "pc_idle_sleep_min" in body:
+        await agents.push_config()
     return {"ok": True}
 
 
@@ -194,17 +197,24 @@ async def chat_endpoint(body: ChatIn):
     if not text:
         raise HTTPException(400, "Empty message.")
 
+    reply = None
     hit = commands.match(text)
     if hit:
         rule, m = hit
+        t0 = time.perf_counter()
+        try:
+            reply = await rule.handler(m)
+        except commands.Unclear:
+            reply = None  # not sure what was meant: Claude handles it
+        ms = int((time.perf_counter() - t0) * 1000)
 
+    if reply is not None:
         async def instant():
             conv_id = body.conversation_id or chat.latest_conversation()
             yield chat.sse("meta", {"conversation_id": conv_id, "instant": True})
-            reply = await rule.handler(m)
             chat.save_exchange(conv_id, text, reply)
             yield chat.sse("delta", {"text": reply})
-            yield chat.sse("done", {"cost_usd": 0, "conversation_id": conv_id, "instant": True})
+            yield chat.sse("done", {"cost_usd": 0, "conversation_id": conv_id, "instant": True, "ms": ms})
         gen = instant()
     else:
         gen = chat.run_chat(body.conversation_id, text)
@@ -327,7 +337,119 @@ def status():
     return {
         "hub": {"uptime_s": int(time.time() - STARTED), "push_devices":
                 db.q1("SELECT COUNT(*) AS n FROM push_subscriptions")["n"]},
-        "pc": {"connected": False, "note": "PC agent arrives in milestone 2"},
-        "jobs": [],
+        **agents.summary(),
+        "jobs": jobs.recent(8),
+        "confirmations": confirm.listing(),
         "mail": {"connected": False, "note": "Gmail arrives in milestone 4"},
     }
+
+
+# --- PC agents ------------------------------------------------------------------------------
+@app.post("/api/agent/pair-code", dependencies=authed)
+def agent_pair_code():
+    return agents.new_pair_code()
+
+
+class PairIn(BaseModel):
+    code: str
+    name: str
+    os: str
+    role: str = "pc"
+    mac: str = ""
+    broadcast: str = ""
+
+
+@app.post("/api/agent/pair")
+def agent_pair(body: PairIn, request: Request):
+    auth.throttle(request)
+    if body.role not in ("pc", "relay"):
+        raise HTTPException(400, "role must be pc or relay")
+    token = agents.pair(body.code, body.name.strip()[:60] or "PC", body.os[:40], body.role, body.mac[:20],
+                        body.broadcast[:40])
+    if not token:
+        auth.record_failure(request)
+        raise HTTPException(401, "That pairing code is wrong or expired. Make a new one in the dashboard.")
+    return {"token": token}
+
+
+@app.websocket("/api/agent/ws")
+async def agent_ws(ws: WebSocket):
+    token = (ws.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+    agent = agents.agent_for_token(token)
+    if not agent:
+        await ws.close(code=4401)
+        return
+    await ws.accept()
+    try:
+        await agents.serve(ws, agent)
+    except WebSocketDisconnect:
+        pass
+
+
+@app.post("/api/pc/wake", dependencies=authed)
+async def pc_wake():
+    return {"message": await agents.wake()}
+
+
+@app.post("/api/pc/{agent_id}/forget", dependencies=authed)
+def pc_forget(agent_id: int):
+    agents.forget(agent_id)
+    return {"ok": True}
+
+
+@app.get("/api/screens/{sid}", dependencies=authed)
+def screen(sid: str):
+    p = pc.screen_path(sid)
+    if not p:
+        raise HTTPException(404)
+    return FileResponse(p, media_type="image/jpeg")
+
+
+# --- jobs ----------------------------------------------------------------------------------------------
+@app.get("/api/jobs", dependencies=authed)
+def jobs_list():
+    return jobs.recent(20)
+
+
+@app.get("/api/jobs/{job_id}", dependencies=authed)
+def job_detail(job_id: int):
+    j = jobs.get(job_id)
+    if not j:
+        raise HTTPException(404)
+    return {**j, "logs": jobs.logs(job_id)}
+
+
+class TextIn(BaseModel):
+    text: str
+
+
+@app.post("/api/jobs/{job_id}/cancel", dependencies=authed)
+async def job_cancel(job_id: int):
+    return {"message": await jobs.cancel(job_id)}
+
+
+@app.post("/api/jobs/{job_id}/followup", dependencies=authed)
+async def job_followup(job_id: int, body: TextIn):
+    try:
+        return {"message": await jobs.followup(job_id, body.text)}
+    except (agents.AgentOffline, agents.AgentError) as e:
+        raise HTTPException(409, str(e))
+
+
+# --- confirmations -------------------------------------------------------------------------------------
+class ConfirmIn(BaseModel):
+    approve: bool
+    conversation_id: int | None = None
+
+
+@app.get("/api/confirm", dependencies=authed)
+def confirm_list():
+    return confirm.listing()
+
+
+@app.post("/api/confirm/{pid}", dependencies=authed)
+async def confirm_resolve(pid: str, body: ConfirmIn):
+    result = await confirm.resolve(pid, body.approve)
+    if body.conversation_id:
+        chat.save_note(body.conversation_id, result)
+    return {"message": result}
