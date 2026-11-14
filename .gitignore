@@ -1,0 +1,13 @@
+# Secrets and all personal state live here - never commit
+data/
+.env
+*.env
+!.env.example
+
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# local editor/preview config
+.claude/

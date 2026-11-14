@@ -1,0 +1,14 @@
+# The hub: one container, all state in ./data (back up that folder to move machines).
+# It only listens on 127.0.0.1 - Tailscale ("tailscale serve") is the only way in.
+services:
+  hub:
+    build: ./hub
+    container_name: assistant-hub
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      - DATA_DIR=/data
+      - TZ=${TZ:-Europe/Oslo}

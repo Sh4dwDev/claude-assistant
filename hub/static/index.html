@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0a0a0c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Assistant</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <!-- Login / first-run setup -->
+  <section id="gate" class="gate" hidden>
+    <div class="gate-card">
+      <div class="brand-mark"><span class="ring"></span><span class="brand-name" data-name>Claude</span></div>
+      <div id="gate-body"></div>
+    </div>
+  </section>
+
+  <!-- Main app -->
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="brand"><span class="ring small"></span><span class="brand-name" data-name>Claude</span><span id="conn" class="conn" title="Connection"></span></div>
+      <div class="voice" id="voice" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="top-right">
+        <span id="clock" class="mono muted"></span>
+        <button class="link" id="btn-new" title="Start a new chat">New chat</button>
+        <button class="link" id="btn-settings">Settings</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="chat" id="view-chat">
+        <div class="messages" id="messages"></div>
+        <form class="composer" id="composer" autocomplete="off">
+          <button type="button" class="icon-btn" id="btn-mic" title="Talk (Ctrl+Space on PC)" aria-label="Talk">
+            <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          </button>
+          <textarea id="input" rows="1" placeholder="Message" enterkeyhint="send"></textarea>
+          <button type="submit" class="icon-btn accent" id="btn-send" title="Send" aria-label="Send">
+            <svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+          </button>
+        </form>
+      </section>
+
+      <aside class="side" id="view-side">
+        <section class="panel">
+          <h2>PC</h2>
+          <div class="row"><span class="dot off" id="pc-dot"></span><span id="pc-state">Not connected</span>
+            <button class="chip" id="btn-wake" disabled title="Arrives in milestone 2">Wake</button></div>
+          <p class="note" id="pc-note">PC agent arrives in milestone 2.</p>
+        </section>
+        <section class="panel">
+          <h2>Jobs</h2>
+          <div id="jobs" class="list"><p class="note">No jobs running.</p></div>
+        </section>
+        <section class="panel">
+          <h2>Mail</h2>
+          <div id="mail" class="list"><p class="note">Gmail arrives in milestone 4.</p></div>
+        </section>
+        <section class="panel">
+          <h2>Notifications</h2>
+          <div id="notifications" class="list"></div>
+        </section>
+        <section class="panel">
+          <h2>Costs <span class="mono muted" id="cost-month"></span></h2>
+          <div id="costs" class="list"></div>
+        </section>
+      </aside>
+    </main>
+
+    <nav class="tabs" id="tabs">
+      <button data-view="chat" class="active">Chat</button>
+      <button data-view="side">Activity</button>
+      <button data-view="settings">Settings</button>
+    </nav>
+  </div>
+
+  <!-- Settings sheet -->
+  <section id="settings" class="sheet" hidden>
+    <div class="sheet-inner">
+      <header class="sheet-head"><h1>Settings</h1><button class="link" id="btn-close-settings">Close</button></header>
+      <div id="settings-body"></div>
+    </div>
+  </section>
+
+  <div id="toasts" class="toasts"></div>
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
