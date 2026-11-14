@@ -173,19 +173,28 @@ async def _run_tools(blocks) -> list[dict]:
 
     return list(await asyncio.gather(*(one(b) for b in blocks)))
 
+def engine() -> str | None:
+    """Which brain answers: your Claude subscription (via Claude Code) or the API key."""
+    from . import cc_chat
+    pref = db.get_setting("chat_engine") or "auto"
+    sub_ok, api_ok = cc_chat.available(), config.has_secret("ANTHROPIC_API_KEY")
+    if pref == "api" and api_ok:
+        return "api"
+    if sub_ok:
+        return "subscription"
+    return "api" if api_ok else None
+
 
 async def run_chat(conv_id: int | None, user_text: str) -> AsyncIterator[str]:
+    from . import cc_chat
     conv_id = conv_id or latest_conversation()
     if not db.q1("SELECT id FROM conversations WHERE id=?", (conv_id,)):
         conv_id = new_conversation()
     yield sse("meta", {"conversation_id": conv_id})
 
-    if not config.has_secret("ANTHROPIC_API_KEY"):
-        yield sse("error", {"message": "No Claude API key yet. Add it in Settings."})
-        return
-    if costs.over_cap("claude_api"):
-        yield sse("error", {"message": "This month's Claude API spending cap is reached. "
-                                       "Raise it in Settings, or wait until next month."})
+    which = engine()
+    if not which:
+        yield sse("error", {"message": "Connect your Claude subscription in Settings > Keys first."})
         return
 
     lock = _locks.setdefault(conv_id, asyncio.Lock())
@@ -193,83 +202,121 @@ async def run_chat(conv_id: int | None, user_text: str) -> AsyncIterator[str]:
         conv = db.q1("SELECT title FROM conversations WHERE id=?", (conv_id,))
         if conv and conv["title"] in (None, "New chat"):
             db.run("UPDATE conversations SET title=? WHERE id=?", (user_text.strip()[:60], conv_id))
-        _save(conv_id, "user", [{"type": "text", "text": f"[{_stamp()}] {user_text}"}], user_text)
+        prompt = f"[{_stamp()}] {user_text}"
+        _save(conv_id, "user", [{"type": "text", "text": prompt}], user_text)
 
-        settings = db.all_settings()
-        model = settings["chat_model"]
-        tool_specs = [
-            {"type": "web_search_20260209", "name": "web_search", "max_uses": 5,
-             "user_location": {"type": "approximate", "country": "NO", "timezone": settings["timezone"]}},
-            {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5},
-        ] + [t.spec() for t in tools.registry().values()]
-
-        client = _client()
-        total_cost = 0.0
-        wrote_text = False
-        try:
-            for _step in range(MAX_STEPS):
-                kwargs = dict(
-                    model=model,
-                    max_tokens=16000,
-                    system=_system(),
-                    messages=_api_messages(conv_id),
-                    tools=tool_specs,
-                    output_config={"effort": settings["chat_effort"]},
-                    cache_control={"type": "ephemeral"},
-                )
-                final = None
-                first_text_this_step = True
-                async for kind, val in _stream_once(client, kwargs):
+        if which == "subscription":
+            reply, model = "", db.get_setting("chat_model")
+            try:
+                async for kind, val in cc_chat.stream(prompt, _system(), cc_chat.session_for(conv_id), model):
                     if kind == "text":
-                        if first_text_this_step and wrote_text:
-                            yield sse("delta", {"text": "\n\n"})
-                        first_text_this_step = False
-                        wrote_text = True
+                        reply += val
                         yield sse("delta", {"text": val})
                     elif kind == "status":
                         yield sse("status", {"text": val})
                     else:
-                        final = val
+                        reply = reply or val["text"]
+                        if not reply:  # nothing streamed (older CLI): send the final text at once
+                            yield sse("delta", {"text": val["text"]})
+                        cc_chat.save_session(conv_id, val["session_id"])
+                        cc_chat.record_use(model, val["cost_equiv"])
+                _save(conv_id, "assistant", [{"type": "text", "text": reply or "(no reply)"}], reply or None)
+                yield sse("done", {"cost_usd": 0, "conversation_id": conv_id, "engine": "subscription"})
+                return
+            except cc_chat.SubscriptionLimit as e:
+                if not config.has_secret("ANTHROPIC_API_KEY"):
+                    yield sse("error", {"message": f"You've hit your Claude plan's usage limit ({e}). It resets on "
+                                                   "its own; add an API key in Settings to keep chatting meanwhile."})
+                    return
+                yield sse("status", {"text": "Plan limit reached, answering with the API key"})
+            except cc_chat.EngineError as e:
+                yield sse("error", {"message": str(e)})
+                return
 
-                cost = costs.claude_cost(final.model, final.usage)
-                total_cost += cost
-                costs.record("claude_api", cost, detail=final.model,
-                             meta={"in": final.usage.input_tokens, "out": final.usage.output_tokens})
+        async for chunk in _run_api(conv_id):
+            yield chunk
 
-                content = [b.to_dict(mode="json") for b in final.content]
-                text = "".join(b.text for b in final.content if b.type == "text").strip()
-                _save(conv_id, "assistant", content, text or None)
 
-                stop = final.stop_reason
-                tool_uses = [b for b in final.content if b.type == "tool_use"]
-                if tool_uses and stop != "tool_use":
-                    # cut off mid tool call: never run it, but keep the history valid
-                    _save(conv_id, "user", [{"type": "tool_result", "tool_use_id": b.id, "is_error": True,
-                                             "content": "Not run: the reply was cut off."} for b in tool_uses], None)
-                if stop == "pause_turn":
-                    continue
-                if stop == "refusal":
-                    yield sse("delta", {"text": "\n\n(I can't help with that one.)"})
-                    break
-                if stop == "tool_use" and tool_uses:
-                    results = await _run_tools(tool_uses)
-                    _save(conv_id, "user", results, None)
-                    continue
-                if stop == "max_tokens":
-                    yield sse("delta", {"text": "\n\n(Reply cut off - ask me to continue.)"})
+async def _run_api(conv_id: int) -> AsyncIterator[str]:
+    if costs.over_cap("claude_api"):
+        yield sse("error", {"message": "This month's Claude API spending cap is reached. "
+                                       "Raise it in Settings, or wait until next month."})
+        return
+    settings = db.all_settings()
+    model = settings["chat_model"]
+    tool_specs = [
+        {"type": "web_search_20260209", "name": "web_search", "max_uses": 5,
+         "user_location": {"type": "approximate", "country": "NO", "timezone": settings["timezone"]}},
+        {"type": "web_fetch_20260209", "name": "web_fetch", "max_uses": 5},
+    ] + [t.spec() for t in tools.registry().values()]
+
+    client = _client()
+    total_cost = 0.0
+    wrote_text = False
+    try:
+        for _step in range(MAX_STEPS):
+            kwargs = dict(
+                model=model,
+                max_tokens=16000,
+                system=_system(),
+                messages=_api_messages(conv_id),
+                tools=tool_specs,
+                output_config={"effort": settings["chat_effort"]},
+                cache_control={"type": "ephemeral"},
+            )
+            final = None
+            first_text_this_step = True
+            async for kind, val in _stream_once(client, kwargs):
+                if kind == "text":
+                    if first_text_this_step and wrote_text:
+                        yield sse("delta", {"text": "\n\n"})
+                    first_text_this_step = False
+                    wrote_text = True
+                    yield sse("delta", {"text": val})
+                elif kind == "status":
+                    yield sse("status", {"text": val})
+                else:
+                    final = val
+
+            cost = costs.claude_cost(final.model, final.usage)
+            total_cost += cost
+            costs.record("claude_api", cost, detail=final.model,
+                         meta={"in": final.usage.input_tokens, "out": final.usage.output_tokens})
+
+            content = [b.to_dict(mode="json") for b in final.content]
+            text = "".join(b.text for b in final.content if b.type == "text").strip()
+            _save(conv_id, "assistant", content, text or None)
+
+            stop = final.stop_reason
+            tool_uses = [b for b in final.content if b.type == "tool_use"]
+            if tool_uses and stop != "tool_use":
+                # cut off mid tool call: never run it, but keep the history valid
+                _save(conv_id, "user", [{"type": "tool_result", "tool_use_id": b.id, "is_error": True,
+                                         "content": "Not run: the reply was cut off."} for b in tool_uses], None)
+            if stop == "pause_turn":
+                continue
+            if stop == "refusal":
+                yield sse("delta", {"text": "\n\n(I can't help with that one.)"})
                 break
-        except anthropic.AuthenticationError:
-            yield sse("error", {"message": "The Claude API key was rejected. Update it in Settings."})
-            return
-        except anthropic.RateLimitError:
-            yield sse("error", {"message": "Claude is rate-limited right now. Try again in a minute."})
-            return
-        except anthropic.APIConnectionError:
-            yield sse("error", {"message": "Can't reach the Claude API (internet down?). Your message is saved."})
-            return
-        except anthropic.APIStatusError as e:
-            yield sse("error", {"message": f"Claude API error {e.status_code}: {e.message}"})
-            return
+            if stop == "tool_use" and tool_uses:
+                results = await _run_tools(tool_uses)
+                _save(conv_id, "user", results, None)
+                continue
+            if stop == "max_tokens":
+                yield sse("delta", {"text": "\n\n(Reply cut off - ask me to continue.)"})
+            break
+    except anthropic.AuthenticationError:
+        yield sse("error", {"message": "The Claude API key was rejected. Update it in Settings."})
+        return
+    except anthropic.RateLimitError:
+        yield sse("error", {"message": "Claude is rate-limited right now. Try again in a minute."})
+        return
+    except anthropic.APIConnectionError:
+        yield sse("error", {"message": "Can't reach the Claude API (internet down?). Your message is saved."})
+        return
+    except anthropic.APIStatusError as e:
+        yield sse("error", {"message": f"Claude API error {e.status_code}: {e.message}"})
+        return
 
     events.publish("costs", {})
     yield sse("done", {"cost_usd": round(total_cost, 5), "conversation_id": conv_id})

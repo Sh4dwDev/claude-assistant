@@ -25,14 +25,16 @@ wake word (5).
 | Item | Monthly | Notes |
 |---|---|---|
 | Server (e.g. Hetzner) | about €4–5 | Fixed price. Reusing a server you already have costs nothing extra if it has 2 GB+ RAM. |
-| Claude API | about $5–10 | Roughly 20 messages a day on the default model. The default cap is **$20**; the assistant stops at the cap and tells you. |
+| Claude | included | Chat and coding jobs use your own Claude plan (Pro or Max). Nothing extra to pay. |
+| Claude API key (optional backup) | $0 unless used | Only answers when you hit your plan's usage limit. Pay per use, capped at **$20** by default. |
 | Tailscale | free | Private network so only your devices can reach the hub. |
 | Phone notifications, Discord | free | |
 | Calls and SMS (milestone 3) | max $5 | Hard cap enforced by the hub. |
 
-Your Claude Max subscription is separate: it powers Claude Code on your PC (milestone 2) and
-doesn't cover the API key used for chat. Change the chat model in Settings: Opus is the smartest,
-Sonnet costs half, Haiku is much cheaper.
+How it uses your plan: the hub runs the official Claude Code program, signed in with a token
+you create once on your PC. Anthropic's terms allow that when it's your own subscription for
+your own use. Don't share the assistant with other people on your plan; for that, use an API key
+(Settings > Chat uses).
 
 ---
 
@@ -63,9 +65,12 @@ address, something like `https://assistant.your-tailnet.ts.net`.
 Open the address on your PC. A short setup asks for:
 
 1. **Your name, where you live, and a password** (the second lock after Tailscale).
-2. **Your Claude API key**, with a link and one sentence on where to get it.
-3. **Discord** (optional).
-4. **Notifications** for this device.
+2. **Your Claude subscription token.** On your PC, open a terminal and run `claude setup-token`
+   (if Claude Code isn't installed yet, first run `irm https://claude.ai/install.ps1 | iex` in
+   PowerShell). Approve in the browser, then paste the token it prints. It lasts a year.
+3. **An API key as backup** (optional; skip it if you like).
+4. **Discord** (optional).
+5. **Notifications** for this device.
 
 ### On your phone
 
@@ -121,6 +126,8 @@ commits.
 | Problem | Fix |
 |---|---|
 | The page doesn't load | Tailscale must be on (phone and PC). On the server: `cd /opt/claude-assistant && docker compose ps` should show the hub as running. |
+| "Couldn't sign in with your subscription token" | Run `claude setup-token` on your PC again, then Settings > Keys > Replace. Tokens last a year. |
+| "You've hit your Claude plan's usage limit" | It resets by itself (every few hours, plus a weekly limit). Add an API key backup in Settings to keep chatting meanwhile. |
 | "API key was rejected" | Settings > Keys > Replace. Check your API credit at console.anthropic.com. |
 | No phone notifications | iPhone: open the app from the Home Screen icon, not Safari. Then Settings > Notifications > Enable, and Send a test. |
 | See what the hub is doing | `cd /opt/claude-assistant && docker compose logs -f hub` |
@@ -133,7 +140,9 @@ commits.
 install-hub.sh        one-command server install
 docker-compose.yml    the hub container (listens only on 127.0.0.1; Tailscale serves it)
 hub/app/              Python (FastAPI) backend
-  chat.py             Claude API: streaming, web search, tool loop, cost tracking
+  chat.py             picks the engine; API path: streaming, web search, tool loop, costs
+  cc_chat.py          subscription path: runs Claude Code headless (claude -p) per chat
+  mcp_http.py         the hub's tools served over MCP to that Claude Code
   commands.py         instant-command engine (patterns that skip the AI)
   pc_commands.py      the instant PC commands
   pc.py, confirm.py   PC actions and the ask-first confirmations
@@ -142,7 +151,7 @@ hub/app/              Python (FastAPI) backend
   notify.py           notification channels (push, Discord; SMS in milestone 3)
   costs.py            prices, monthly totals, enforced caps
 hub/static/           dashboard and phone app (plain HTML/CSS/JS, no build step)
-hub/tests/            offline tests: python -m tests.test_chat_loop (from hub/)
+hub/tests/            offline tests (from hub/): python -m tests.test_chat_loop, python -m tests.test_subscription
 agent/                the PC agent (agent.py, platform_win.py, platform_linux.py, jobs.py)
   install-*.{ps1,sh}  one-command installers the dashboard hands out
   tests/              offline test: python tests/test_jobs.py (from agent/)

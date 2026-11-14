@@ -89,6 +89,10 @@ def summary() -> dict:
     rows = []
     total = server_usd
     rows.append({"service": "server", "name": SERVICES["server"], "spent": server_usd, "cap": None, "fixed": True})
+    sub = db.q1("SELECT COUNT(*) AS n FROM usage_log WHERE month=? AND service='claude_sub'", (month,))["n"]
+    if sub:
+        rows.append({"service": "claude_sub", "name": "Claude plan", "spent": 0.0, "cap": None, "fixed": False,
+                     "note": f"{sub} replies, included"})
     for svc in ("claude_api", "phone", "tts"):
         s = spent(svc, month)
         total += s

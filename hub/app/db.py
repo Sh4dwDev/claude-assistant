@@ -65,8 +65,18 @@ def conn() -> sqlite3.Connection:
     return c
 
 
+MIGRATIONS = [
+    "ALTER TABLE conversations ADD COLUMN cc_session_id TEXT",  # Claude Code session per chat
+]
+
+
 def init() -> None:
     conn().executescript(SCHEMA)
+    for sql in MIGRATIONS:
+        try:
+            conn().execute(sql)
+        except sqlite3.OperationalError:
+            pass  # already applied
     conn().commit()
 
 
@@ -92,6 +102,7 @@ DEFAULTS: dict[str, Any] = {
     "user_name": "",  # asked on the setup page, stored only in your database
     "home": "",
     "timezone": "Europe/Oslo",
+    "chat_engine": "auto",  # auto = your Claude subscription when connected, else the API key
     "chat_model": "claude-opus-5-5",
     "chat_effort": "low",
     "server_cost_eur": 4.5,

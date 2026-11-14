@@ -3,6 +3,13 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 
+# Claude Code: the chat engine when you use your Claude subscription instead of an API key.
+# Its state (sessions) lives on the data volume; updates come with each re-install.
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates bash git ripgrep \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://claude.ai/install.sh | bash
+ENV PATH="/root/.local/bin:${PATH}" CLAUDE_CONFIG_DIR=/data/claude DISABLE_AUTOUPDATER=1
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

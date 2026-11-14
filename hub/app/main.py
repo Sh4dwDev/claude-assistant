@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import agents, auth, chat, commands, config, confirm, costs, db, events, jobs, pc
+from . import agents, auth, cc_chat, chat, commands, config, confirm, costs, db, events, jobs, mcp_http, pc
 from . import pc_commands  # noqa: F401  (registers the instant PC commands)
 from .notify import notify, vapid_keys
 from .setup_steps import SECRET_KEYS, STEPS
@@ -28,6 +28,7 @@ app = FastAPI(title="Assistant hub", docs_url=None, redoc_url=None)
 app.add_middleware(SessionMiddleware, secret_key=config.get_secret("SESSION_SECRET"),
                    session_cookie="assistant", max_age=60 * 60 * 24 * 90, same_site="strict")
 authed = [Depends(auth.require)]
+app.include_router(mcp_http.router)  # the hub's tools, for Claude Code running inside the hub
 
 
 @app.middleware("http")
@@ -131,6 +132,13 @@ async def save_secret(body: SecretIn):
     if body.key not in SECRET_KEYS:
         raise HTTPException(400, "Unknown setting.")
     value = body.value.strip()
+    if body.key == "CLAUDE_CODE_OAUTH_TOKEN" and value:
+        if not value.startswith("sk-ant-oat"):
+            raise HTTPException(400, "That doesn't look like a subscription token. It starts with sk-ant-oat "
+                                     "and comes from running  claude setup-token  on your PC.")
+        problem = await cc_chat.check_token(value)
+        if problem:
+            raise HTTPException(400, problem)
     if body.key == "ANTHROPIC_API_KEY" and value:
         try:
             c = anthropic.AsyncAnthropic(api_key=value, max_retries=1)
@@ -157,7 +165,8 @@ def setup_done():
 
 
 # --- settings -------------------------------------------------------------------
-EDITABLE = {"assistant_name": str, "user_name": str, "home": str, "timezone": str, "chat_model": str, "chat_effort": str,
+EDITABLE = {"assistant_name": str, "user_name": str, "home": str, "timezone": str, "chat_engine": str,
+            "chat_model": str, "chat_effort": str,
             "server_cost_eur": float, "eur_usd": float, "cap_claude_api_usd": float, "cap_phone_usd": float,
             "cap_tts_usd": float, "speak_replies": bool, "pc_idle_sleep_min": int}
 
@@ -167,7 +176,8 @@ def get_settings():
     s = db.all_settings()
     return {"settings": {k: s[k] for k in EDITABLE},
             "secrets": {k: config.has_secret(k) for k in sorted(SECRET_KEYS)},
-            "models": list(costs.CLAUDE_PRICES)}
+            "models": list(costs.CLAUDE_PRICES),
+            "engine_now": chat.engine(), "claude_code_installed": bool(cc_chat.claude_bin())}
 
 
 @app.post("/api/settings", dependencies=authed)

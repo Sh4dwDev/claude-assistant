@@ -3,16 +3,28 @@ Later milestones add their steps here (Twilio, Gmail, ElevenLabs...)."""
 
 STEPS = [
     {
+        "key": "CLAUDE_CODE_OAUTH_TOKEN",
+        "title": "Your Claude subscription",
+        "why": "The assistant thinks with your own Claude plan (Pro or Max), so chatting costs nothing extra.",
+        "how": "On your PC, open a terminal and run  claude setup-token  (install Claude Code first if needed: "
+               "irm https://claude.ai/install.ps1 | iex). Approve in the browser, then copy the token it prints "
+               "(it starts with sk-ant-oat) and paste it here. It lasts a year.",
+        "link": "https://code.claude.com/docs/en/authentication",
+        "link_label": "How the token works",
+        "placeholder": "sk-ant-oat01-...",
+        "required": True,
+        "milestone": 1,
+    },
+    {
         "key": "ANTHROPIC_API_KEY",
-        "title": "Claude API key",
-        "why": "This is how the assistant thinks and answers; you pay per use, usually a few dollars "
-               "a month, and the spending cap in Settings stops it at your limit.",
-        "how": "Sign in, click Create Key, name it 'assistant', and paste it here. "
-               "Add a few dollars of credit under Billing if you haven't before.",
+        "title": "Backup: Claude API key (optional)",
+        "why": "Only used if you hit your plan's usage limit, or if you choose the API in Settings. "
+               "You pay per use, and the spending cap in Settings stops it at your limit.",
+        "how": "Sign in, click Create Key, name it 'assistant', and paste it here. Skip this if you don't want a backup.",
         "link": "https://console.anthropic.com/settings/keys",
         "link_label": "Open the Claude Console",
-        "placeholder": "sk-ant-...",
-        "required": True,
+        "placeholder": "sk-ant-api...",
+        "required": False,
         "milestone": 1,
     },
     {

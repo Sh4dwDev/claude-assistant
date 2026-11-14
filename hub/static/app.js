@@ -433,7 +433,7 @@ async function refreshCosts() {
     const pct = r.cap ? Math.min(100, (r.spent / r.cap) * 100) : 0;
     return h("div", { class: "cost" },
       h("span", {}, r.name),
-      h("span", { class: "amt" }, r.fixed ? `${usd(r.spent)} fixed` : r.cap ? `${usd(r.spent)} / ${usd(r.cap)}` : usd(r.spent)),
+      h("span", { class: "amt" }, r.note ? r.note : r.fixed ? `${usd(r.spent)} fixed` : r.cap ? `${usd(r.spent)} / ${usd(r.cap)}` : usd(r.spent)),
       r.cap ? h("div", { class: `bar ${pct >= 80 ? "warn" : ""}` }, h("i", { style: `width:${pct}%` })) : null);
   });
   rows.push(h("div", { class: "cost-total" }, h("span", {}, "This month"), h("span", {}, usd(c.total))));
@@ -622,7 +622,7 @@ const field = (label, el) => h("div", { class: "field" }, h("label", {}, label),
 
 async function openSettings() {
   $("#settings").hidden = false;
-  const { settings: s, secrets, models } = await api("/api/settings");
+  const { settings: s, secrets, models, engine_now } = await api("/api/settings");
   const steps = await api("/api/setup/steps");
   const inp = (k, type = "text", extra = {}) => h("input", { class: "input", type, value: s[k], "data-k": k, ...extra });
   const sel = (k, opts) => { const el = h("select", { class: "input", "data-k": k }, ...opts.map(([v, t]) => h("option", { value: v }, t))); el.value = s[k]; return el; };
@@ -635,6 +635,7 @@ async function openSettings() {
       field("Your name", inp("user_name")),
       field("Where you live", inp("home")),
       field("Time zone", inp("timezone")),
+      field("Chat uses", sel("chat_engine", [["auto", "My Claude plan (API key as backup)"], ["api", "The API key"]])),
       field("Chat model", sel("chat_model", models.map((m) => [m, m]))),
       field("Thinking effort", sel("chat_effort", [["low", "Low (fast, cheap)"], ["medium", "Medium"], ["high", "High"]]))),
     h("label", { class: "toggle" }, h("input", { type: "checkbox", "data-k": "speak_replies", checked: s.speak_replies }), "Read replies aloud"));
@@ -658,7 +659,7 @@ async function openSettings() {
     catch (x) { msg.textContent = x.message; }
   });
   // save button lives in caps group but saves both groups
-  general.append(h("p", { class: "note" }, "Opus is the smartest; Sonnet costs half; Haiku is the cheapest. Changes save with the button below."));
+  general.append(h("p", { class: "note" }, `Answering with: ${engine_now === "subscription" ? "your Claude plan" : engine_now === "api" ? "the API key" : "nothing yet (add your plan token under Keys)"}. Thinking effort applies to the API key only. Changes save with the button below.`));
 
   const keys = h("div", { class: "group" }, h("h2", {}, "Keys and connections"),
     ...steps.map((st) => h("div", { class: "secret-row" },
